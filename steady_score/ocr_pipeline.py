@@ -48,6 +48,7 @@ class ImageProcessResult:
     rows: list[ScoreRow]
     errors: list[str]
     status: str
+    metadata: dict[str, Any] | None
 
 
 class OCRProcessor:
@@ -182,29 +183,21 @@ class OCRProcessor:
         errors: list[str] = []
         csv_path: Path | None = None
         normalized_rows: list[ScoreRow] = []
+        metadata: dict[str, Any] | None = None
         try:
+            try:
+                meta_obj = self.simple_extractor.extract_header_metadata(image_path)
+                metadata = meta_obj.as_dict()
+                self.logger.info("[%s] 表头解析成功: %s", image_path.name, meta_obj.display_name())
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"表头解析失败: {exc}") from exc
+
             # Use simple OCR extractor - much simpler and more reliable
             self.logger.info("[%s] 使用简单OCR方法识别", image_path.name)
             normalized_rows = self.simple_extractor.extract_table_from_image(image_path)
             
             if normalized_rows:
-                # Write CSV
-                csv_path = self.config.raw_dir / f"{image_path.stem}.csv"
-                self.config.raw_dir.mkdir(parents=True, exist_ok=True)
-                
-                import pandas as pd
-                df = pd.DataFrame([
-                    {
-                        "score_range": row.score_range,
-                        "lower": row.lower,
-                        "upper": row.upper,
-                        "candidates": row.candidates,
-                        "admitted": row.admitted,
-                    }
-                    for row in normalized_rows
-                ])
-                df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-                
+                csv_path = self._write_csv(image_path, normalized_rows, metadata or {})
                 status = "success"
                 self.logger.info(
                     "[%s] 成功识别 %d 行，输出: %s",
@@ -228,6 +221,7 @@ class OCRProcessor:
             rows=normalized_rows,
             errors=errors,
             status=status,
+            metadata=metadata,
         )
 
     def _run_engine(self, image: np.ndarray) -> Iterable[dict]:
@@ -485,10 +479,13 @@ class OCRProcessor:
         rows: list[ScoreRow],
         metadata: dict[str, Any],
     ) -> Path:
-        df = pd.DataFrame([asdict(r) for r in rows])
-        if metadata:
-            for key, value in metadata.items():
-                df[key] = value
+        meta = metadata or {}
+        records = [{**meta, **asdict(r)} for r in rows]
+        df = pd.DataFrame(records)
+        desired_order = list(meta.keys()) + [
+            key for key in ("score_range", "lower", "upper", "candidates", "admitted") if key in df.columns
+        ]
+        df = df[desired_order] if desired_order else df
         output_name = image_path.with_suffix(".csv").name
         csv_path = self.config.raw_dir / output_name
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")

@@ -291,16 +291,17 @@ class SteadyScoreGUI(tk.Tk):
             skipped = []
             self._append_log("[PAVA] 开始计算")
             for csv_file in csv_files:
-                school = csv_file.stem
+                load_result = None
                 try:
-                    buckets = load_buckets(csv_file)
-                    result = compute_steady_score(school, buckets, config)
+                    load_result = load_buckets(csv_file)
+                    result = compute_steady_score(load_result.metadata, load_result.buckets, config)
                     results.append(result)
                     if result.warnings:
-                        self._append_log(f"[PAVA] {school} 警告: {'; '.join(result.warnings)}")
+                        self._append_log(f"[PAVA] {load_result.metadata.display_name()} 警告: {'; '.join(result.warnings)}")
                 except Exception as exc:  # noqa: BLE001
-                    skipped.append(f"{school}: {exc}")
-                    self._append_log(f"[PAVA] {school} 失败: {exc}")
+                    label = load_result.metadata.display_name() if load_result is not None else csv_file.stem
+                    skipped.append(f"{label}: {exc}")
+                    self._append_log(f"[PAVA] {label} 失败: {exc}")
 
             if not results:
                 raise RuntimeError("没有成功的院校可写入报告")

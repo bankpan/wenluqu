@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence
+from typing import Sequence
 
 import pandas as pd
 
 from .config import PAVAConfig
+from .metadata import SchoolMetadata
 
 Z_95 = 1.959964
 
@@ -27,6 +29,7 @@ class Bucket:
 @dataclass(slots=True)
 class SteadyScoreResult:
     school: str
+    metadata: SchoolMetadata
     buckets_raw: list[Bucket]
     buckets_smoothed: list[Bucket]
     steady_score: float
@@ -35,12 +38,33 @@ class SteadyScoreResult:
     warnings: list[str]
 
 
-def load_buckets(csv_path: Path) -> list[Bucket]:
+@dataclass(slots=True)
+class BucketLoadResult:
+    metadata: SchoolMetadata
+    buckets: list[Bucket]
+
+
+def load_buckets(csv_path: Path) -> BucketLoadResult:
     df = pd.read_csv(csv_path)
     required_columns = {"score_range", "lower", "upper", "candidates", "admitted"}
+    meta_columns = {"school", "college", "major", "code", "study_mode", "province"}
     missing = required_columns - set(df.columns)
     if missing:
         raise ValueError(f"{csv_path} 缺少列: {missing}")
+    missing_meta = meta_columns - set(df.columns)
+    if missing_meta:
+        raise ValueError(f"{csv_path} 缺少元数据列: {missing_meta}")
+
+    first_row = df.iloc[0].to_dict()
+    metadata = SchoolMetadata.from_row(first_row)
+    if not all([metadata.school, metadata.college, metadata.major, metadata.code, metadata.study_mode, metadata.province]):
+        raise ValueError(f"{csv_path} 元数据字段不完整")
+    if not re.fullmatch(r"\d{6}", metadata.code):
+        raise ValueError(f"{csv_path} 专业代码格式无效: {metadata.code!r}")
+    if metadata.study_mode not in {"全日制", "非全日制"}:
+        raise ValueError(f"{csv_path} 学习方式无效: {metadata.study_mode!r}")
+    if not re.fullmatch(r".+[省市]$|香港|澳门|台湾", metadata.province):
+        raise ValueError(f"{csv_path} 省份格式无效: {metadata.province!r}")
 
     buckets: list[Bucket] = []
     for row in df.to_dict(orient="records"):
@@ -63,10 +87,21 @@ def load_buckets(csv_path: Path) -> list[Bucket]:
             wilson_high=_wilson_interval(admitted, candidates)[1],
         )
         buckets.append(bucket)
-    return buckets
+    return BucketLoadResult(metadata=metadata, buckets=buckets)
 
 
-def compute_steady_score(school: str, buckets: Sequence[Bucket], config: PAVAConfig) -> SteadyScoreResult:
+def compute_steady_score(
+    school: str | SchoolMetadata,
+    buckets: Sequence[Bucket],
+    config: PAVAConfig,
+) -> SteadyScoreResult:
+    metadata = school if isinstance(school, SchoolMetadata) else SchoolMetadata(
+        school=str(school),
+        college="",
+        major="",
+        code="",
+        study_mode="",
+    )
     buckets_sorted = sorted(buckets, key=lambda b: b.center)
     smoothed = _apply_pava(buckets_sorted)
     steady_score, lo_bucket, hi_bucket = _interpolate_threshold(smoothed, config.target_ratio)
@@ -85,7 +120,8 @@ def compute_steady_score(school: str, buckets: Sequence[Bucket], config: PAVACon
         raise ValueError("无法计算稳录取分数，请检查数据完成度")
 
     return SteadyScoreResult(
-        school=school,
+        school=metadata.school,
+        metadata=metadata,
         buckets_raw=list(buckets_sorted),
         buckets_smoothed=smoothed,
         steady_score=round(steady_score, config.interpolation_digits),

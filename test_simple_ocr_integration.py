@@ -44,6 +44,8 @@ def test_simple_ocr():
         # 输出结果
         print(f"处理状态: {result.status}")
         print(f"识别行数: {len(result.rows)}")
+        if result.metadata:
+            print(f"表头: {result.metadata}")
 
         if result.rows:
             print("\n提取的数据:")
@@ -64,6 +66,10 @@ def test_simple_ocr():
             print("✓ 行数正确 (11行)")
         else:
             print(f"✗ 行数不正确，期望11行，实际{len(result.rows)}行")
+        if result.metadata:
+            print("✓ 表头元数据已提取")
+        else:
+            print("✗ 表头元数据缺失")
 
         if result.status == "success":
             print("✓ 处理成功")

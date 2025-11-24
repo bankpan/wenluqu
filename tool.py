@@ -81,14 +81,16 @@ def batch_calculate(args: argparse.Namespace) -> int:
     skipped: list[str] = []
     for csv_file in csv_files:
         school = csv_file.stem
+        load_result = None
         try:
-            buckets = load_buckets(csv_file)
-            result = compute_steady_score(school, buckets, config)
+            load_result = load_buckets(csv_file)
+            result = compute_steady_score(load_result.metadata, load_result.buckets, config)
             results.append(result)
             if result.warnings:
-                print(f"[警告] {school}: {'; '.join(result.warnings)}")
+                print(f"[警告] {load_result.metadata.display_name()}: {'; '.join(result.warnings)}")
         except Exception as exc:  # noqa: BLE001
-            skipped.append(f"{school}: {exc}")
+            label = load_result.metadata.display_name() if load_result is not None else school
+            skipped.append(f"{label}: {exc}")
 
     if skipped:
         print("以下院校计算失败:")

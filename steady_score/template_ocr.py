@@ -54,8 +54,8 @@ class TemplateOCRExtractor:
     # 表头关键词
     HEADER_KEYWORDS = ["分数段", "复试人数", "录取人数"]
 
-    # 底部标记（用于定位数据区域下边界）
-    BOTTOM_MARKERS = ["一对一", "择校", "本校话题"]
+    # 底部导航栏元素（用于定位数据区域下边界）
+    NAV_BAR_MARKERS = ["收藏", "院校PK", "本校话题", "话题"]
 
     # 分数段正则
     SCORE_PATTERN = re.compile(r'(\d{3})\s*分?[-~～]\s*(\d{3})\s*分?')
@@ -345,14 +345,66 @@ class TemplateOCRExtractor:
         # 数据区域上边界：表头下方一定距离
         top_y = header.header_y + 40  # 表头下方40像素
 
-        # 数据区域下边界：查找底部标记
-        bottom_y = image_height - 100  # 默认值
+        # 数据区域下边界：使用底部导航栏元素（优先级从高到低）
+        # 注意：不再使用"一对一择校"广告，因为它会与数据行重叠
+        bottom_y = None
 
+        # 优先级1: 查找"收藏"按钮（底部导航栏最左侧，从不重叠）
         for box in ocr_boxes:
-            text = box['text']
-            # 检查是否包含底部标记
-            if any(marker in text for marker in self.BOTTOM_MARKERS):
-                bottom_y = min(bottom_y, box['y'] - 20)  # 标记上方20像素
+            if "收藏" in box['text']:
+                # 获取bbox顶部Y坐标，减去安全间距
+                if 'bbox' in box:
+                    bbox = box['bbox']
+                    if isinstance(bbox, np.ndarray):
+                        y_coords = bbox[:, 1] if bbox.ndim == 2 else [p[1] for p in bbox]
+                        min_y = float(np.min(y_coords))
+                        bottom_y = min_y - 30  # 安全间距30px
+                        self.logger.info(f"使用'收藏'按钮定位底部边界: Y={bottom_y:.0f}")
+                        break
+
+        # 优先级2: 查找"院校PK"或"PK"按钮
+        if bottom_y is None:
+            for box in ocr_boxes:
+                text = box['text']
+                if "院校PK" in text or (text == "PK" and box['y'] > image_height * 0.8):
+                    if 'bbox' in box:
+                        bbox = box['bbox']
+                        if isinstance(bbox, np.ndarray):
+                            y_coords = bbox[:, 1] if bbox.ndim == 2 else [p[1] for p in bbox]
+                            min_y = float(np.min(y_coords))
+                            bottom_y = min_y - 30
+                            self.logger.info(f"使用'PK'按钮定位底部边界: Y={bottom_y:.0f}")
+                            break
+
+        # 优先级3: 查找"本校话题"按钮（绿色按钮）
+        if bottom_y is None:
+            for box in ocr_boxes:
+                if "本校话题" in box['text'] or (box['text'] == "话题" and box['y'] > image_height * 0.8):
+                    # 这个按钮在数据下方，不会重叠
+                    if 'bbox' in box:
+                        bbox = box['bbox']
+                        if isinstance(bbox, np.ndarray):
+                            y_coords = bbox[:, 1] if bbox.ndim == 2 else [p[1] for p in bbox]
+                            min_y = float(np.min(y_coords))
+                            bottom_y = min_y - 20
+                            self.logger.info(f"使用'本校话题'按钮定位底部边界: Y={bottom_y:.0f}")
+                            break
+
+        # 优先级4: 使用固定偏移（典型底部导航栏高度）
+        if bottom_y is None:
+            bottom_y = image_height - 120
+            self.logger.warning(f"未找到底部导航栏标记，使用固定偏移: Y={bottom_y:.0f}")
+
+        # 验证数据区域高度
+        if bottom_y - top_y < 200:
+            self.logger.warning(
+                f"数据区域过小(top={top_y:.0f}, bottom={bottom_y:.0f}, height={bottom_y-top_y:.0f})，"
+                f"使用默认值"
+            )
+            bottom_y = image_height - 120
+
+        # 确保下边界不超过图片高度
+        bottom_y = min(bottom_y, image_height - 50)
 
         return DataRegion(top_y=top_y, bottom_y=bottom_y, height=0)
 

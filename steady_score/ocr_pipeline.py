@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 import traceback
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -486,10 +487,25 @@ class OCRProcessor:
             key for key in ("score_range", "lower", "upper", "candidates", "admitted") if key in df.columns
         ]
         df = df[desired_order] if desired_order else df
-        output_name = image_path.with_suffix(".csv").name
+        output_stem = self._build_output_stem(meta, image_path.stem)
+        output_name = f"{output_stem}.csv"
         csv_path = self.config.raw_dir / output_name
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
         return csv_path
+
+    def _build_output_stem(self, metadata: dict[str, Any], fallback: str) -> str:
+        school = str(metadata.get("school", "") or "").strip()
+        major = str(metadata.get("major", "") or "").strip()
+        if school and major:
+            base = f"{school}{major}"
+        elif school:
+            base = school
+        else:
+            base = fallback
+        # 移除空白和文件名非法字符
+        base = re.sub(r"\s+", "", base)
+        base = re.sub(r'[\\\\/:*?"<>|]', "", base)
+        return base or fallback
 
     def _extract_metadata(self, image: Image.Image) -> dict[str, Any]:
         width, height = image.size

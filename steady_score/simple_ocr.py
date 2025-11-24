@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -86,8 +87,12 @@ class SimpleOCRExtractor:
         ocr_boxes = self._ocr_boxes(img_array)
         self.logger.info(f"识别到 {len(ocr_boxes)} 个文本框")
 
+        table_boxes, row_height = self._isolate_table_region(ocr_boxes, img_array.shape[0])
+        self.logger.info(f"过滤到表格区域内 {len(table_boxes)} 个文本框")
+
         # 4. 按Y坐标分组成行
-        text_rows = self._group_into_rows(ocr_boxes)
+        y_threshold = self._adaptive_row_threshold(row_height)
+        text_rows = self._group_into_rows(table_boxes, y_threshold=y_threshold)
         self.logger.info(f"分组为 {len(text_rows)} 行")
 
         # 5. 提取表格数据行
@@ -192,7 +197,7 @@ class SimpleOCRExtractor:
                 text = text_info[0] if isinstance(text_info, (list, tuple)) else str(text_info)
                 conf = text_info[1] if isinstance(text_info, (list, tuple)) and len(text_info) > 1 else 1.0
 
-                # 计算中心坐标
+                # 计算中心坐标和边界
                 x_coords = [p[0] for p in bbox]
                 y_coords = [p[1] for p in bbox]
                 x_center = sum(x_coords) / len(x_coords)
@@ -202,6 +207,10 @@ class SimpleOCRExtractor:
                     'text': text.strip(),
                     'x': x_center,
                     'y': y_center,
+                    'x_min': min(x_coords),
+                    'x_max': max(x_coords),
+                    'y_min': min(y_coords),
+                    'y_max': max(y_coords),
                     'conf': conf
                 })
             except Exception as exc:
@@ -269,10 +278,21 @@ class SimpleOCRExtractor:
             boxes: list[dict[str, Any]] = []
             for i, (text, poly) in enumerate(zip(texts, polys)):
                 try:
-                    x_center = float(np.mean(poly[:, 0]))
-                    y_center = float(np.mean(poly[:, 1]))
+                    x_vals = poly[:, 0]
+                    y_vals = poly[:, 1]
+                    x_center = float(np.mean(x_vals))
+                    y_center = float(np.mean(y_vals))
                     conf = scores[i] if i < len(scores) else 1.0
-                    boxes.append({"text": text.strip(), "x": x_center, "y": y_center, "conf": conf})
+                    boxes.append({
+                        "text": text.strip(),
+                        "x": x_center,
+                        "y": y_center,
+                        "x_min": float(np.min(x_vals)),
+                        "x_max": float(np.max(x_vals)),
+                        "y_min": float(np.min(y_vals)),
+                        "y_max": float(np.max(y_vals)),
+                        "conf": conf,
+                    })
                 except Exception as exc:  # noqa: BLE001
                     self.logger.warning(f"处理文本框失败: {exc}")
                     continue
@@ -368,6 +388,68 @@ class SimpleOCRExtractor:
         cleaned = cleaned.strip()
         return cleaned
 
+    def _isolate_table_region(self, boxes: list[dict[str, Any]], image_height: int) -> tuple[list[dict[str, Any]], float]:
+        """根据按钮和分数段位置截取表格区域，避免按钮干扰。"""
+        if not boxes:
+            return [], 40.0
+
+        score_boxes = [b for b in boxes if self.SCORE_PATTERN.search(b.get("text", ""))]
+        score_ys = sorted(b["y"] for b in score_boxes) if score_boxes else []
+        row_height = self._estimate_row_height(score_ys)
+
+        button_top = self._find_button_top(boxes)
+        if button_top is None:
+            # 无按钮时不裁剪，仅使用行高阈值
+            return boxes, row_height
+
+        # padding 自适应：行高的 0.7，至少 8，最多行高
+        padding = max(8.0, min(row_height, row_height * 0.7))
+        bottom_limit = button_top - padding
+
+        last_score_y = score_ys[-1] if score_ys else 0.0
+        min_bottom = last_score_y + row_height * 0.6
+        if bottom_limit < min_bottom:
+            bottom_limit = min(button_top, min_bottom)
+
+        # 若裁剪下界侵入表格末行（数字区域可能低于分数段），则放弃裁剪以保留末行
+        guard_bottom = last_score_y + row_height * 0.9
+        if bottom_limit < guard_bottom:
+            return boxes, row_height
+
+        filtered = [b for b in boxes if b.get("y", 0) <= bottom_limit]
+        # 如果裁剪后分数段数量比原来少，怀疑截断，则不裁剪
+        if score_boxes:
+            kept_scores = [b for b in filtered if self.SCORE_PATTERN.search(b.get("text", ""))]
+            if len(kept_scores) < len(score_boxes):
+                return boxes, row_height
+        return filtered, row_height
+
+    def _estimate_row_height(self, score_ys: list[float]) -> float:
+        if len(score_ys) < 2:
+            return 40.0
+        diffs = sorted(abs(b - a) for a, b in zip(score_ys, score_ys[1:]) if b > a)
+        if not diffs:
+            return 40.0
+        mid = diffs[len(diffs) // 2]
+        return max(24.0, min(60.0, mid))
+
+    def _find_button_top(self, boxes: list[dict[str, Any]]) -> float | None:
+        """查找“一对一择校”按钮的上边界。"""
+        button_texts = ("一对一择校", "一对一", "择校")
+        candidates: list[float] = []
+        for b in boxes:
+            text = b.get("text", "")
+            if any(token in text for token in button_texts):
+                y_min = b.get("y_min")
+                if y_min is not None:
+                    candidates.append(float(y_min))
+        return min(candidates) if candidates else None
+
+    def _adaptive_row_threshold(self, row_height: float) -> int:
+        if row_height <= 0:
+            return 40
+        return int(max(18.0, min(50.0, row_height * 0.8)))
+
     def _extract_province(self, lines: list[dict[str, Any]]) -> tuple[str | None, float]:
         """在表头文本行中提取省份/直辖市/自治区，未找到即返回 (None, 0.0)。"""
         if not lines:
@@ -454,42 +536,98 @@ class SimpleOCRExtractor:
                         continue
 
             # 根据数字个数判断列格式
-            if len(numbers) >= 2:
-                # 至少有2个数字：复试人数、录取人数
-                candidates = numbers[0]
-                admitted = numbers[1]
+            if len(numbers) < 2:
+                # 尝试从相邻行补充数字，处理按钮/间距导致的行拆分
+                try:
+                    current_y = statistics.median([b.get("y", 0.0) for b in row_boxes])
+                except statistics.StatisticsError:
+                    current_y = 0.0
+                try:
+                    heights = [
+                        max(4.0, float(b.get("y_max", 0.0) - b.get("y_min", 0.0)))
+                        for b in row_boxes
+                    ]
+                    row_height_guess = statistics.median(heights)
+                except statistics.StatisticsError:
+                    row_height_guess = 30.0
+                # 放宽邻行合并范围，覆盖按钮挤压导致的垂直偏移
+                delta_y = max(16.0, min(60.0, row_height_guess * 1.3))
+                neighbor_indices = [row_idx + 1, row_idx - 1, row_idx + 2, row_idx - 2]
+                for n_idx in neighbor_indices:
+                    if n_idx < 0 or n_idx >= len(text_rows):
+                        continue
+                    neighbor = text_rows[n_idx]
+                    # 避免把下一行的分数段行合并进来
+                    if any(self.SCORE_PATTERN.search(b.get("text", "")) for b in neighbor):
+                        continue
+                    for b in neighbor:
+                        if score_x and b.get("x", 0.0) <= score_x:
+                            continue
+                        if abs(b.get("y", 0.0) - current_y) > delta_y:
+                            continue
+                        text = b.get("text", "").strip()
+                        if self.NUMBER_PATTERN.match(text):
+                            try:
+                                numbers.append(int(text))
+                            except ValueError:
+                                continue
+                    if len(numbers) >= 2:
+                        break
 
-                # 基本验证
-                if score_lower >= score_upper:
-                    self.logger.warning(
-                        f"行 {row_idx} 分数范围无效: {score_lower} >= {score_upper}"
-                    )
-                    continue
+            if len(numbers) < 2:
+                # 尝试从包含数字的混合文本中提取（例如被按钮挤压导致粘连）
+                candidate_rows = [row_boxes]
+                for n_idx in [row_idx + 1, row_idx - 1, row_idx + 2, row_idx - 2]:
+                    if 0 <= n_idx < len(text_rows):
+                        candidate_rows.append(text_rows[n_idx])
+                for row_group in candidate_rows:
+                    for b in row_group:
+                        if score_x and b.get("x", 0.0) <= score_x:
+                            continue
+                        digits = re.findall(r"\d+", b.get("text", ""))
+                        for d in digits:
+                            try:
+                                numbers.append(int(d))
+                            except ValueError:
+                                continue
+                        if len(numbers) >= 2:
+                            break
+                    if len(numbers) >= 2:
+                        break
 
-                if admitted > candidates:
-                    self.logger.warning(
-                        f"行 {row_idx} 录取人数({admitted})大于复试人数({candidates})"
-                    )
-                    continue
-
-                # 创建ScoreRow对象
-                score_row = ScoreRow(
-                    score_range=score_range,
-                    lower=score_lower,
-                    upper=score_upper,
-                    candidates=candidates,
-                    admitted=admitted
+            if len(numbers) < 2:
+                raise ValueError(
+                    f"行 {row_idx} 分数段 {score_range} 缺少复试/录取人数，识别结果: {numbers}"
                 )
-                score_rows.append(score_row)
 
-                self.logger.debug(
-                    f"提取行 {row_idx}: {score_range}, "
-                    f"复试={candidates}, 录取={admitted}"
+            # 至少有2个数字：复试人数、录取人数
+            candidates = numbers[0]
+            admitted = numbers[1]
+
+            # 基本验证
+            if score_lower >= score_upper:
+                raise ValueError(
+                    f"行 {row_idx} 分数范围无效: {score_lower} >= {score_upper}"
                 )
-            else:
-                self.logger.debug(
-                    f"行 {row_idx} 数字不足: {score_range}, "
-                    f"numbers={numbers}, row_text='{row_text}'"
+
+            if admitted > candidates:
+                raise ValueError(
+                    f"行 {row_idx} 录取人数({admitted})大于复试人数({candidates})"
                 )
+
+            # 创建ScoreRow对象
+            score_row = ScoreRow(
+                score_range=score_range,
+                lower=score_lower,
+                upper=score_upper,
+                candidates=candidates,
+                admitted=admitted
+            )
+            score_rows.append(score_row)
+
+            self.logger.debug(
+                f"提取行 {row_idx}: {score_range}, "
+                f"复试={candidates}, 录取={admitted}"
+            )
 
         return score_rows

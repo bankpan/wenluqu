@@ -40,6 +40,7 @@ def process_images(args: argparse.Namespace) -> int:
         raw_dir=output_dir / "raw",
         log_dir=output_dir / "logs",
         error_file=output_dir / "errors.txt",
+        checkpoint_file=output_dir / "checkpoint.json",
         lang=args.lang,
     )
     logger = setup_file_logger(config.log_dir)
@@ -60,9 +61,11 @@ def process_images(args: argparse.Namespace) -> int:
         else:
             fh.write("所有图片均识别成功\n")
 
-    total = len(results)
-    success = sum(1 for r in results if r.status == "success")
-    print(f"处理完成: {success}/{total} 张图片")
+    base_done = getattr(processor, "resume_base_completed", 0)
+    total = getattr(processor, "resume_total", len(results)) or len(results)
+    success = base_done + sum(1 for r in results if r.status == "success")
+    total_display = total if total else len(results)
+    print(f"处理完成: {success}/{total_display} 张图片")
     print(f"CSV输出目录: {config.raw_dir}")
     print(f"错误清单: {config.error_file}")
     return 0 if success else 1

@@ -12,6 +12,7 @@ class OCRConfig:
     raw_dir: Path
     log_dir: Path
     error_file: Path
+    checkpoint_file: Path | None = None
     lang: Literal["ch", "en", "chinese_cht"] = "ch"
     min_confidence: float = 0.6
     crop_margin: int = 10

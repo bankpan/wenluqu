@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, List
+from threading import Event
+import json
 
 import numpy as np
 import pandas as pd
@@ -58,6 +60,8 @@ class OCRProcessor:
     def __init__(self, config: OCRConfig, logger: logging.Logger) -> None:
         self.config = config
         self.logger = logger
+        self.resume_base_completed = 0
+        self.resume_total = 0
         # Initialize simple OCR extractor (new simpler method)
         self.simple_extractor = SimpleOCRExtractor(lang=config.lang, logger=logger)
         logger.info("使用简单OCR方法（基础OCR + 正则匹配）")
@@ -155,6 +159,7 @@ class OCRProcessor:
     def process_directory(
         self,
         progress_callback: Callable[[int, int, Path], None] | None = None,
+        pause_event: Event | None = None,
     ) -> list[ImageProcessResult]:
         image_paths = sorted(
             path for path in self.config.image_dir.iterdir()
@@ -163,22 +168,72 @@ class OCRProcessor:
         if not image_paths:
             raise FileNotFoundError(f"未在 {self.config.image_dir} 找到图片")
 
+        pending, total = self._load_or_init_checkpoint(image_paths)
+
         self.config.raw_dir.mkdir(parents=True, exist_ok=True)
         results: list[ImageProcessResult] = []
 
-        total = len(image_paths)
         iterator: Iterable[Path]
         if progress_callback is None:
-            iterator = tqdm(image_paths, desc="识别进度", unit="张")
+            iterator = tqdm(pending, desc="识别进度", unit="张")
         else:
-            iterator = image_paths
+            iterator = pending
+
+        base_completed = total - len(pending)
+        self.resume_base_completed = base_completed
+        self.resume_total = total
 
         for idx, image_path in enumerate(iterator, start=1):
+            if pause_event is not None:
+                # 阻塞直至继续信号，支持GUI暂停/继续
+                pause_event.wait()
             result = self._process_single_image(image_path)
             results.append(result)
+            self._save_checkpoint(pending, idx, total)
             if progress_callback is not None:
-                progress_callback(idx, total, image_path)
+                progress_callback(base_completed + idx, total, image_path)
+
+        self._clear_checkpoint()
         return results
+
+    def _checkpoint_path(self) -> Path | None:
+        return self.config.checkpoint_file
+
+    def _load_or_init_checkpoint(self, image_paths: list[Path]) -> tuple[list[Path], int]:
+        checkpoint_file = self._checkpoint_path()
+        if checkpoint_file and checkpoint_file.exists():
+            try:
+                data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+                pending = [Path(p) for p in data.get("pending", [])]
+                total = int(data.get("total", len(image_paths)))
+                # 若 checkpoint 无效或列表为空，则重建
+                if pending:
+                    self.logger.info("检测到未完成任务，继续处理剩余 %d/%d 张。", len(pending), total)
+                    return pending, total
+            except Exception:  # noqa: BLE001
+                self.logger.warning("加载checkpoint失败，重新开始。", exc_info=True)
+        total = len(image_paths)
+        if checkpoint_file:
+            payload = {"pending": [str(p.resolve()) for p in image_paths], "total": total}
+            checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return image_paths, total
+
+    def _save_checkpoint(self, original_pending: list[Path], processed_idx: int, total: int) -> None:
+        checkpoint_file = self._checkpoint_path()
+        if not checkpoint_file:
+            return
+        remaining = original_pending[processed_idx:]
+        payload = {"pending": [str(p.resolve()) for p in remaining], "total": total}
+        checkpoint_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _clear_checkpoint(self) -> None:
+        checkpoint_file = self._checkpoint_path()
+        if checkpoint_file and checkpoint_file.exists():
+            try:
+                checkpoint_file.unlink()
+            except Exception:  # noqa: BLE001
+                self.logger.warning("清理checkpoint失败: %s", checkpoint_file, exc_info=True)
 
     def _process_single_image(self, image_path: Path) -> ImageProcessResult:
         errors: list[str] = []

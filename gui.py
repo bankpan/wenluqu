@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -9,7 +10,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from steady_score.config import PAVAConfig
+from steady_score.config import OCRConfig, PAVAConfig
+from steady_score.logging_utils import setup_file_logger
+from steady_score.ocr_pipeline import OCRProcessor
 from steady_score.pava import compute_steady_score, load_buckets
 from steady_score.reporting import write_report
 
@@ -29,8 +32,11 @@ class SteadyScoreGUI(tk.Tk):
         self.calc_min_bin = tk.StringVar(value="8")
 
         self.status_var = tk.StringVar(value="ready")
+        self.ocr_progress_var = tk.DoubleVar(value=0.0)
+        self.ocr_progress_label = tk.StringVar(value="等待开始")
         self._running_task = None
         self._current_proc: subprocess.Popen | None = None
+        self._pause_event: threading.Event | None = None
         self.project_root = Path(__file__).resolve().parent
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_layout()
@@ -66,8 +72,21 @@ class SteadyScoreGUI(tk.Tk):
             state="readonly",
         ).grid(row=2, column=1, sticky="ew", padx=5)
 
-        run_ocr_btn = ttk.Button(ocr_frame, text="运行OCR", command=self._start_ocr_task)
-        run_ocr_btn.grid(row=3, column=0, columnspan=3, pady=15)
+        control_frame = ttk.Frame(ocr_frame)
+        control_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=5, pady=(10, 5))
+        self.run_ocr_btn = ttk.Button(control_frame, text="运行OCR", command=self._start_ocr_task, width=12)
+        self.run_ocr_btn.pack(side=tk.LEFT, padx=(0, 10))
+        self.pause_btn = ttk.Button(control_frame, text="暂停", command=self._pause_ocr, state="disabled", width=8)
+        self.pause_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.resume_btn = ttk.Button(control_frame, text="继续", command=self._resume_ocr, state="disabled", width=8)
+        self.resume_btn.pack(side=tk.LEFT, padx=(0, 5))
+
+        ttk.Label(ocr_frame, textvariable=self.ocr_progress_label).grid(row=4, column=0, columnspan=3, sticky="w", padx=5)
+        ttk.Progressbar(
+            ocr_frame,
+            maximum=100.0,
+            variable=self.ocr_progress_var,
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", padx=5, pady=(0, 10))
 
         for i in range(3):
             ocr_frame.grid_columnconfigure(i, weight=1)
@@ -156,6 +175,23 @@ class SteadyScoreGUI(tk.Tk):
     def _set_status(self, message: str) -> None:
         self.after(0, lambda: self.status_var.set(message))
 
+    def _set_ocr_progress(self, percent: float, label: str | None = None) -> None:
+        self.after(
+            0,
+            lambda: (
+                self.ocr_progress_var.set(max(0.0, min(100.0, percent))),
+                self.ocr_progress_label.set(label or self.ocr_progress_label.get()),
+            ),
+        )
+
+    def _set_pause_controls(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.after(0, lambda: (self.pause_btn.configure(state=state), self.resume_btn.configure(state=state)))
+
+    def _set_run_control(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.after(0, lambda: self.run_ocr_btn.configure(state=state))
+
     def _show_info(self, title: str, message: str) -> None:
         self.after(0, lambda: messagebox.showinfo(title, message))
 
@@ -180,6 +216,10 @@ class SteadyScoreGUI(tk.Tk):
             finally:
                 self._running_task = None
                 self._set_status("ready")
+                self._set_ocr_progress(0.0, "等待开始")
+                self._set_pause_controls(enabled=False)
+                self._set_run_control(enabled=True)
+                self._pause_event = None
 
         return runner
 
@@ -229,7 +269,27 @@ class SteadyScoreGUI(tk.Tk):
 
     # OCR task ------------------------------------------------------------
     def _start_ocr_task(self) -> None:
+        self._set_ocr_progress(0.0, "准备执行")
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # 默认运行
+        self._set_pause_controls(enabled=True)
+        self.resume_btn.configure(state="disabled")
+        self._set_run_control(enabled=False)
         self._run_in_thread(self._run_ocr)
+
+    def _pause_ocr(self) -> None:
+        if self._pause_event:
+            self._pause_event.clear()
+            self._set_status("已暂停")
+            self.pause_btn.configure(state="disabled")
+            self.resume_btn.configure(state="normal")
+
+    def _resume_ocr(self) -> None:
+        if self._pause_event:
+            self._pause_event.set()
+            self._set_status("执行中...")
+            self.pause_btn.configure(state="normal")
+            self.resume_btn.configure(state="disabled")
 
     def _run_ocr(self) -> None:
         try:
@@ -240,28 +300,77 @@ class SteadyScoreGUI(tk.Tk):
             output_dir.mkdir(parents=True, exist_ok=True)
 
             lang = (self.ocr_lang.get() or "ch").strip() or "ch"
-            python_exec = sys.executable or "python"
-            command = [
-                python_exec,
-                self.project_root / "tool.py",
-                "process-images",
-                image_dir,
-                output_dir,
-                "--lang",
-                lang,
-            ]
-            summary = self._run_cli_command(
-                command,
-                task_label="OCR",
-                capture_keys=["处理完成", "CSV输出目录", "错误清单"],
+
+            config = OCRConfig(
+                image_dir=image_dir,
+                output_dir=output_dir,
+                raw_dir=output_dir / "raw",
+                log_dir=output_dir / "logs",
+                error_file=output_dir / "errors.txt",
+                checkpoint_file=output_dir / "checkpoint.json",
+                lang=lang,
             )
-            message_lines = [
-                summary[key]
-                for key in ("处理完成", "CSV输出目录", "错误清单")
-                if key in summary
+            logger = setup_file_logger(config.log_dir)
+            logger.setLevel(logging.INFO)
+
+            gui_handler = logging.Handler()
+
+            class _GuiLogHandler(logging.Handler):
+                def __init__(self, outer) -> None:
+                    super().__init__()
+                    self.outer = outer
+
+                def emit(self, record: logging.LogRecord) -> None:
+                    msg = self.format(record)
+                    self.outer._append_log(f"[OCR] {msg}")
+
+            gui_handler = _GuiLogHandler(self)
+            gui_handler.setLevel(logging.INFO)
+            gui_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+            logger.addHandler(gui_handler)
+
+            self._append_log("[OCR] 开始处理目录")
+            processor = OCRProcessor(config, logger)
+
+            def on_progress(idx: int, total: int, path: Path) -> None:
+                percent = (idx / total) * 100 if total else 0.0
+                self._set_ocr_progress(percent, f"{idx}/{total} {path.name}")
+                self._append_log(f"[OCR] 进度 {idx}/{total}: {path.name}")
+
+            results = processor.process_directory(
+                progress_callback=on_progress,
+                pause_event=self._pause_event,
+            )
+
+            error_lines: list[str] = []
+            for result in results:
+                if result.errors:
+                    for err in result.errors:
+                        error_lines.append(f"{result.image_path.name}\t{err}")
+
+            config.error_file.parent.mkdir(parents=True, exist_ok=True)
+            with config.error_file.open("w", encoding="utf-8") as fh:
+                if error_lines:
+                    fh.write("\n".join(error_lines))
+                else:
+                    fh.write("所有图片均识别成功\n")
+
+            base_done = getattr(processor, "resume_base_completed", 0)
+            total = getattr(processor, "resume_total", len(results)) or len(results)
+            success = base_done + sum(1 for r in results if r.status == "success")
+            summary_lines = [
+                f"处理完成: {success}/{total} 张图片",
+                f"CSV输出目录: {config.raw_dir}",
+                f"错误清单: {config.error_file}",
             ]
-            info_message = "\n".join(message_lines) if message_lines else "OCR命令执行完成，详情见日志。"
-            self._show_info("OCR完成", info_message)
+            for line in summary_lines:
+                self._append_log(f"[OCR] {line}")
+            self._set_ocr_progress(100.0, "完成")
+            info_message = "\n".join(summary_lines)
+            if success:
+                self._show_info("OCR完成", info_message)
+            else:
+                self._show_warning("OCR完成（有错误）", info_message)
         except Exception as exc:  # noqa: BLE001
             self._append_log(f"[OCR] 错误: {exc}")
             self._show_error("OCR失败", str(exc))

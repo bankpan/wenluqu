@@ -1,0 +1,2 @@
+2025-11-20 19:21:52 | INFO | 创建 PPStructureV3 引擎参数: {'lang': 'ch', 'use_doc_orientation_classify': False, 'use_doc_unwarping': False, 'use_textline_orientation': False, 'use_seal_recognition': False, 'use_formula_recognition': False, 'use_chart_recognition': False, 'use_region_detection': False}
+2025-11-20 19:24:09 | WARNING | 当前加载的是 PPStructureV3，可能较慢且在手机截图上易截断表格，建议安装 paddleocr<=2.7.0.3 以启用轻量 PPStructureV2。

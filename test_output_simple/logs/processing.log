@@ -1,0 +1,123 @@
+2025-11-22 16:17:14 | INFO | 创建 PPStructureV3 引擎参数: {'lang': 'ch', 'use_doc_orientation_classify': False, 'use_doc_unwarping': False, 'use_textline_orientation': False, 'use_seal_recognition': False, 'use_formula_recognition': False, 'use_chart_recognition': False, 'use_region_detection': False}
+2025-11-22 16:17:14 | ERROR | 初始化OCR引擎失败: Unknown argument: layout
+Traceback (most recent call last):
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 63, in __init__
+    self.engine = self._get_or_create_engine(config.lang)
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 109, in _get_or_create_engine
+    engine = self._create_engine(kwargs)
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 148, in _create_engine
+    engine = PPStructure(**safe_kwargs)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_pipelines\pp_structurev3.py", line 137, in __init__
+    super().__init__(**kwargs)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_pipelines\base.py", line 63, in __init__
+    self._common_args = parse_common_args(
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_common_args.py", line 45, in parse_common_args
+    raise ValueError(f"Unknown argument: {name}")
+ValueError: Unknown argument: layout
+
+2025-11-22 16:18:26 | INFO | 创建 PPStructureV3 引擎参数: {'lang': 'ch', 'use_doc_orientation_classify': False, 'use_doc_unwarping': False, 'use_textline_orientation': False, 'use_seal_recognition': False, 'use_formula_recognition': False, 'use_chart_recognition': False, 'use_region_detection': False}
+2025-11-22 16:18:26 | ERROR | 初始化OCR引擎失败: Unknown argument: layout
+Traceback (most recent call last):
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 63, in __init__
+    self.engine = self._get_or_create_engine(config.lang)
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 109, in _get_or_create_engine
+    engine = self._create_engine(kwargs)
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 148, in _create_engine
+    engine = PPStructure(**safe_kwargs)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_pipelines\pp_structurev3.py", line 137, in __init__
+    super().__init__(**kwargs)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_pipelines\base.py", line 63, in __init__
+    self._common_args = parse_common_args(
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_common_args.py", line 45, in parse_common_args
+    raise ValueError(f"Unknown argument: {name}")
+ValueError: Unknown argument: layout
+
+2025-11-22 16:20:11 | INFO | 使用简单OCR方法（基础OCR + 正则匹配）
+2025-11-22 16:20:11 | INFO | [微信图片_20251112160618_717_2.png] 使用简单OCR方法识别
+2025-11-22 16:20:12 | INFO | 开始OCR识别: 微信图片_20251112160618_717_2.png
+2025-11-22 16:20:12 | INFO | 初始化基础OCR引擎 (lang=ch)
+2025-11-22 16:20:28 | ERROR | [微信图片_20251112160618_717_2.png] 识别失败: OCR识别失败: PaddleOCR.predict() got an unexpected keyword argument 'cls'
+Traceback (most recent call last):
+  File "E:\PycharmProjects\wenluqu\steady_score\simple_ocr.py", line 67, in extract_table_from_image
+    result = self.ocr.ocr(img_array, cls=True)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\typing_extensions.py", line 3004, in wrapper
+    return arg(*args, **kwargs)
+  File "C:\Users\DELL\AppData\Local\Programs\Python\Python310\lib\site-packages\paddleocr\_pipelines\ocr.py", line 231, in ocr
+    return self.predict(img, **kwargs)
+TypeError: PaddleOCR.predict() got an unexpected keyword argument 'cls'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "E:\PycharmProjects\wenluqu\steady_score\ocr_pipeline.py", line 188, in _process_single_image
+    normalized_rows = self.simple_extractor.extract_table_from_image(image_path)
+  File "E:\PycharmProjects\wenluqu\steady_score\simple_ocr.py", line 69, in extract_table_from_image
+    raise ValueError(f"OCR识别失败: {exc}") from exc
+ValueError: OCR识别失败: PaddleOCR.predict() got an unexpected keyword argument 'cls'
+2025-11-22 16:21:50 | INFO | 使用简单OCR方法（基础OCR + 正则匹配）
+2025-11-22 16:21:50 | INFO | [微信图片_20251112160618_717_2.png] 使用简单OCR方法识别
+2025-11-22 16:21:50 | INFO | 开始OCR识别: 微信图片_20251112160618_717_2.png
+2025-11-22 16:21:50 | INFO | 初始化基础OCR引擎 (lang=ch)
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=input_path
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=page_index
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=doc_preprocessor_res
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=dt_polys
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=model_settings
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=text_det_params
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=text_type
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=text_rec_score_thresh
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=return_word_box
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=rec_texts
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=rec_scores
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=rec_polys
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=vis_fonts
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=textline_orientation_angles
+2025-11-22 16:24:07 | WARNING | 解析OCR结果项失败: string index out of range, item=rec_boxes
+2025-11-22 16:24:07 | INFO | 识别到 0 个文本框
+2025-11-22 16:24:07 | INFO | 分组为 0 行
+2025-11-22 16:24:07 | INFO | 提取到 0 行有效数据
+2025-11-22 16:24:07 | WARNING | [微信图片_20251112160618_717_2.png] 未识别到有效表格数据
+2025-11-22 16:30:39 | INFO | 使用简单OCR方法（基础OCR + 正则匹配）
+2025-11-22 16:30:39 | INFO | [微信图片_20251112160618_717_2.png] 使用简单OCR方法识别
+2025-11-22 16:30:39 | INFO | 开始OCR识别: 微信图片_20251112160618_717_2.png
+2025-11-22 16:30:39 | INFO | 初始化基础OCR引擎 (lang=ch)
+2025-11-22 16:33:00 | INFO | 识别到 54 个文本框（新版API）
+2025-11-22 16:33:00 | INFO | 分组为 23 行
+2025-11-22 16:33:00 | WARNING | 行 8 数据验证失败: object of type 'ScoreRow' has no len(), row_text='201分-205 18 0', numbers=[18, 0]
+2025-11-22 16:33:00 | WARNING | 行 16 数据验证失败: object of type 'ScoreRow' has no len(), row_text='241分-245 1 1', numbers=[1, 1]
+2025-11-22 16:33:00 | WARNING | 行 17 数据验证失败: object of type 'ScoreRow' has no len(), row_text='246分-250 0 0', numbers=[0, 0]
+2025-11-22 16:33:00 | WARNING | 行 18 数据验证失败: object of type 'ScoreRow' has no len(), row_text='251分-255 1 1', numbers=[1, 1]
+2025-11-22 16:33:00 | INFO | 提取到 0 行有效数据
+2025-11-22 16:33:00 | WARNING | [微信图片_20251112160618_717_2.png] 未识别到有效表格数据
+2025-11-22 16:35:19 | INFO | 使用简单OCR方法（基础OCR + 正则匹配）
+2025-11-22 16:35:19 | INFO | [微信图片_20251112160618_717_2.png] 使用简单OCR方法识别
+2025-11-22 16:35:19 | INFO | 开始OCR识别: 微信图片_20251112160618_717_2.png
+2025-11-22 16:35:19 | INFO | 初始化基础OCR引擎 (lang=ch)
+2025-11-22 16:37:42 | INFO | 识别到 54 个文本框（新版API）
+2025-11-22 16:37:42 | INFO | 分组为 23 行
+2025-11-22 16:37:42 | WARNING | 行 8 数据验证失败: object of type 'ScoreRow' has no len(), row_text='201分-205 18 0', numbers=[18, 0]
+2025-11-22 16:37:42 | WARNING | 行 16 数据验证失败: object of type 'ScoreRow' has no len(), row_text='241分-245 1 1', numbers=[1, 1]
+2025-11-22 16:37:42 | WARNING | 行 17 数据验证失败: object of type 'ScoreRow' has no len(), row_text='246分-250 0 0', numbers=[0, 0]
+2025-11-22 16:37:42 | WARNING | 行 18 数据验证失败: object of type 'ScoreRow' has no len(), row_text='251分-255 1 1', numbers=[1, 1]
+2025-11-22 16:37:42 | INFO | 提取到 0 行有效数据
+2025-11-22 16:37:42 | WARNING | [微信图片_20251112160618_717_2.png] 未识别到有效表格数据
+2025-11-22 16:43:39 | INFO | 使用简单OCR方法（基础OCR + 正则匹配）
+2025-11-22 16:43:39 | INFO | [微信图片_20251112160618_717_2.png] 使用简单OCR方法识别
+2025-11-22 16:43:39 | INFO | 开始OCR识别: 微信图片_20251112160618_717_2.png
+2025-11-22 16:43:39 | INFO | 初始化基础OCR引擎 (lang=ch)
+2025-11-22 16:45:56 | INFO | 识别到 54 个文本框（新版API）
+2025-11-22 16:45:56 | INFO | 分组为 23 行
+2025-11-22 16:45:56 | INFO | 提取到 4 行有效数据
+2025-11-22 16:45:56 | INFO | [微信图片_20251112160618_717_2.png] 成功识别 4 行，输出: test_output_simple\raw\微信图片_20251112160618_717_2.csv
+2025-11-22 16:48:20 | INFO | 使用简单OCR方法（基础OCR + 正则匹配）
+2025-11-22 16:48:20 | INFO | [微信图片_20251112160618_717_2.png] 使用简单OCR方法识别
+2025-11-22 16:48:20 | INFO | 开始OCR识别: 微信图片_20251112160618_717_2.png
+2025-11-22 16:48:20 | INFO | 初始化基础OCR引擎 (lang=ch)
+2025-11-22 16:50:31 | INFO | 识别到 54 个文本框（新版API）
+2025-11-22 16:50:31 | INFO | 分组为 23 行
+2025-11-22 16:50:31 | DEBUG | 提取行 8: 201-205, 复试=18, 录取=0
+2025-11-22 16:50:31 | DEBUG | 提取行 16: 241-245, 复试=1, 录取=1
+2025-11-22 16:50:31 | DEBUG | 提取行 17: 246-250, 复试=0, 录取=0
+2025-11-22 16:50:31 | DEBUG | 提取行 18: 251-255, 复试=1, 录取=1
+2025-11-22 16:50:31 | INFO | 提取到 4 行有效数据
+2025-11-22 16:50:31 | INFO | [微信图片_20251112160618_717_2.png] 成功识别 4 行，输出: test_output_simple\raw\微信图片_20251112160618_717_2.csv

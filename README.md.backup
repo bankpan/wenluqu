@@ -1,0 +1,89 @@
+# 考研院校稳录取分数线自动化工具
+
+本工具包含 **图片OCR识别模块** 与 **PAVA稳录取计算模块**，可批量处理院校复试截图，自动生成 CSV、识别异常、并计算稳录取分数（默认阈值 T=0.75）。处理流程完全自动化，支持 300+ 张图片并带有进度条、日志和容错机制。
+
+## 环境准备
+
+1. 建议使用 Python 3.10+，确保系统可联网以下载 Paddle 相关模型。
+2. 安装依赖（需包含 `paddlex` 才能运行结构化表格识别）：
+
+```bash
+pip install paddlepaddle paddleocr "paddlex[ocr]" pandas openpyxl tqdm
+```
+
+> `paddleocr` 会自动拉取 `Pillow`、`numpy` 等依赖，`tqdm` 用于进度条显示。
+> `PP-Structure` 模块需要 `paddlex[ocr]` 扩展依赖，若初始化 OCR 时提示依赖错误，请执行 `pip install "paddlex[ocr]"`（必要时指定版本号，如 3.3.9），并确保 `shapely`、`pyclipper` 等包安装成功。
+
+## 使用方法
+
+### 图形界面
+
+若希望在桌面环境中操作，可运行：
+
+```bash
+python gui.py
+```
+
+在窗口中依次选择图片目录、输出目录（模块1）以及 CSV 目录、Excel 输出路径（模块2），点击“运行OCR”与“运行PAVA计算”即可。日志面板会实时显示处理进度，任务完成后会提示结果。
+
+### 1. OCR 表格识别
+
+```bash
+python tool.py process-images ./images ./output
+```
+
+- `./images/`：存放手机截图（PNG/JPG/TIFF …）的目录。
+- `./output/raw/`：每张图片对应的 CSV，列为 `score_range, lower, upper, candidates, admitted`。
+- `./output/errors.txt`：识别警告或失败清单，方便人工复核。
+- `./output/logs/processing.log`：详细日志，记录每张图片裁剪、识别、验证状态。
+
+识别特性：
+
+- 自动裁剪：通过像素阈值截取表格区域，去掉标题/手机按钮。
+- 表格对齐：利用 `PPStructure` 解析 HTML 表格，手写解析器展开行列合并。
+- 数据校验：逐行解析分数段与人数，校验录取人数 ≤ 复试人数、列数完整等。
+- 失败隔离：单张图片失败只会写入 `errors.txt`，不中断其他任务。
+
+### 2. 稳录取分数计算
+
+```bash
+python tool.py batch-calculate ./output/raw ./output/final_report.xlsx
+```
+
+可选参数：
+
+- `--threshold 0.75`：PAVA 触发阈值 T。
+- `--min-bin 8`：最小样本量约束，低于该值会提示“建议人工复核”。
+
+输出 `final_report.xlsx` 包含两个工作表：
+
+1. **汇总**：院校、稳录取分数、触发布段（低/高）、p 值、样本量、警告。
+2. **PAVA详情**：每个院校的平滑后分段，含 Wilson 区间，便于溯源。
+
+### 验证建议
+
+- 使用示例截图（浙江农林大学）运行 `process-images`，确认输出 CSV 行数为 11，且包含 `221-225, 15, 12`、`226-230` 样本量最小等关键行。
+- 运行 `batch-calculate` 后，检查 Excel 中对应院校的 `p_low/p_high` 与截图原始比率一致，确保 PAVA 合并逻辑和 Wilson 区间与 PDF 手册一致。
+
+## 项目结构
+
+```
+tool.py                 # CLI 入口
+steady_score/
+  config.py             # 全局配置对象
+  logging_utils.py      # 日志封装
+  ocr_pipeline.py       # OCR + 预处理 + CSV 输出
+  table_parser.py       # HTML 表格解析，展开合并单元格
+  validators.py         # 行级数据校验/规范化
+  pava.py               # PAVA 算法与 Wilson 区间
+  reporting.py          # Excel 报告生成
+README.md               # 使用说明
+```
+
+## 注意事项
+
+- PaddleOCR 会首次下载模型，需保证网络可访问官方模型仓库。
+- 若显存/内存受限，可在 `ocr_pipeline.py` 中按需调整裁剪阈值、批处理策略。
+- 对于识别失败的图片，可手动修正后将 CSV 放入 `output/raw/`，`batch-calculate` 会自动纳入计算。
+
+如需扩展至 GUI或 Web 服务，只需复用 `OCRProcessor` 与 `compute_steady_score` 等核心模块。

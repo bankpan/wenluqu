@@ -1074,14 +1074,33 @@ class SimpleOCRExtractor:
         return best_province, best_conf
 
     def _canonical_province(self, text: str) -> str:
-        base = text.replace("省", "").replace("市", "").strip()
+        cleaned = text.strip()
+        cleaned = cleaned.replace("省", "").replace("市", "")
+        cleaned = re.sub(r"(壮族自治区|维吾尔自治区|回族自治区|自治区|特别行政区)", "", cleaned)
+        base = cleaned.strip()
         if not base or base not in self.PROVINCES:
             return ""
-        # 直辖市用“市”，自治区/特别行政区不用后缀，其余补“省”
+
+        # 直辖市
         if base in {"北京", "天津", "上海", "重庆"}:
             return f"{base}市"
-        if base in {"广西", "内蒙古", "宁夏", "新疆", "西藏", "香港", "澳门", "台湾"}:
+
+        # 自治区/特别行政区
+        autonomous_map = {
+            "广西": "广西壮族自治区",
+            "内蒙古": "内蒙古自治区",
+            "宁夏": "宁夏回族自治区",
+            "新疆": "新疆维吾尔自治区",
+            "西藏": "西藏自治区",
+        }
+        if base in autonomous_map:
+            return autonomous_map[base]
+        if base in {"香港", "澳门"}:
             return base
+        if base == "台湾":
+            return "台湾省"
+
+        # 其他省份
         return f"{base}省"
 
     # ===== 行/列切分 + 单元格OCR =====

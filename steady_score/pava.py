@@ -63,7 +63,7 @@ def load_buckets(csv_path: Path) -> BucketLoadResult:
         raise ValueError(f"{csv_path} 专业代码格式无效: {metadata.code!r}")
     if metadata.study_mode not in {"全日制", "非全日制"}:
         raise ValueError(f"{csv_path} 学习方式无效: {metadata.study_mode!r}")
-    if not re.fullmatch(r".+[省市]$|香港|澳门|台湾", metadata.province):
+    if not re.fullmatch(r"(.+(省|市|自治区|特别行政区)$)|香港|澳门|台湾", metadata.province):
         raise ValueError(f"{csv_path} 省份格式无效: {metadata.province!r}")
 
     buckets: list[Bucket] = []

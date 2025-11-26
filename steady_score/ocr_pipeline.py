@@ -63,7 +63,11 @@ class OCRProcessor:
         self.resume_base_completed = 0
         self.resume_total = 0
         # Initialize simple OCR extractor (new simpler method)
-        self.simple_extractor = SimpleOCRExtractor(lang=config.lang, logger=logger)
+        self.simple_extractor = SimpleOCRExtractor(
+            lang=config.lang,
+            logger=logger,
+            debug_dir=config.output_dir  # 启用调试可视化
+        )
         logger.info("使用简单OCR方法（基础OCR + 正则匹配）")
 
     def _patch_paddle_analysis_config(self) -> None:

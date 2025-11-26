@@ -156,8 +156,8 @@ class SimpleOCRExtractor:
 
         self.logger.info(f"数据区域内有 {len(data_boxes)} 个文本框")
 
-        # 4. 以分数段为锚点，分组成行
-        row_groups = self._group_boxes_by_score_anchors(data_boxes)
+        # 4. 以分数段为锚点，分组成行（传入全部OCR结果，用于最后一行特殊处理）
+        row_groups = self._group_boxes_by_score_anchors(data_boxes, ocr_boxes)
         self.logger.info(f"找到 {len(row_groups)} 个分数段，对应 {len(row_groups)} 行数据")
 
         if not row_groups:
@@ -169,24 +169,20 @@ class SimpleOCRExtractor:
         if not score_rows:
             raise ValueError(f"所有行识别失败，无有效数据。失败详情: {failed_rows[:5]}")
 
-        # 6. 严格验证
-        failure_rate = len(failed_rows) / len(row_groups)
-        if failure_rate > 0.3:
+        # 6. 严格验证 - 零容忍策略：任何行失败都不输出
+        if failed_rows:
+            failure_rate = len(failed_rows) / len(row_groups)
             raise ValueError(
-                f"有效行不足，失败率 {failure_rate:.0%}，失败行: {failed_rows[:5]}"
+                f"表格提取不完整，丢弃了 {len(failed_rows)}/{len(row_groups)} 行 ({failure_rate:.0%})。"
+                f"失败行详情: {failed_rows[:10]}"
             )
-
-        if len(score_rows) < 3:
-            raise ValueError(f"有效数据行太少（{len(score_rows)}行），可能识别有问题")
 
         if not self._is_score_increasing(score_rows):
             raise ValueError("分数段未递增，数据异常")
 
         self.logger.info(
-            "✓ 提取成功: %d 行有效数据，丢弃 %d 行 (%.0f%%)",
+            "✓ 提取成功: %d 行有效数据，零失败",
             len(score_rows),
-            len(failed_rows),
-            failure_rate * 100,
         )
 
         # 7. 保存调试可视化
@@ -204,11 +200,13 @@ class SimpleOCRExtractor:
     def _group_boxes_by_score_anchors(
         self,
         boxes: list[dict[str, Any]],
+        all_boxes: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """以分数段为锚点，将文本框分组成行
 
         Args:
-            boxes: 数据区域内的所有文本框
+            boxes: 数据区域内的所有文本框（用于找分数段）
+            all_boxes: 全部OCR文本框（用于收集同行文本框，特别是最后一行）
 
         Returns:
             行分组列表，每个元素包含：
@@ -216,7 +214,7 @@ class SimpleOCRExtractor:
             - boxes: 该行所有文本框
             - y: 该行的y坐标（分数段的y）
         """
-        # 1. 找到所有包含分数段的文本框
+        # 1. 找到所有包含分数段的文本框（仅在数据区域内查找，避免误识别）
         score_boxes = [
             b for b in boxes
             if self.SCORE_PATTERN.search(b.get("text", ""))
@@ -253,15 +251,33 @@ class SimpleOCRExtractor:
         else:
             tolerance = 25.0  # 只有一行时使用默认值
 
-        # 3. 对每个分数段，收集同一行的所有文本框
+        # 3. 识别最后一行（y坐标最大的分数段）
+        if score_boxes:
+            last_score_y = max(sb.get("y", 0.0) for sb in score_boxes)
+        else:
+            last_score_y = None
+
+        # 4. 对每个分数段，收集同一行的所有文本框
         row_groups = []
         for idx, score_box in enumerate(score_boxes, start=1):
             score_y = score_box.get("y", 0.0)
+            is_last_row = (score_y == last_score_y)
+
+            # 最后一行特殊处理：从全部OCR结果收集，容忍度放宽
+            if is_last_row:
+                search_boxes = all_boxes  # 从全部OCR结果收集
+                row_tolerance = min(50.0, tolerance * 1.5)  # 放宽容忍度到50像素或1.5倍
+                self.logger.debug(
+                    f"行 {idx} [最后一行]: 使用全部OCR结果，容忍度={row_tolerance:.1f}"
+                )
+            else:
+                search_boxes = boxes  # 从数据区域收集
+                row_tolerance = tolerance
 
             # 收集y坐标接近的文本框
             row_boxes = [
-                b for b in boxes
-                if abs(b.get("y", 0.0) - score_y) <= tolerance
+                b for b in search_boxes
+                if abs(b.get("y", 0.0) - score_y) <= row_tolerance
             ]
 
             row_groups.append({

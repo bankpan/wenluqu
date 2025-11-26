@@ -821,13 +821,19 @@ class SimpleOCRExtractor:
         candidates = [line for line in lines if self.SCHOOL_PATTERN.search(line["norm"])]
         if not candidates:
             raise ValueError("表头未找到院校名称行")
-        return max(
-            candidates,
-            key=lambda line: (
-                self._pattern_conf(line["boxes"], self.SCHOOL_PATTERN),
-                len(line["norm"]),
-            ),
-        )
+
+        def score_line(line: dict[str, Any]) -> tuple[int, float, int]:
+            norm = line["norm"]
+            has_university = 1 if "大学" in norm else 0
+            conf = self._pattern_conf(line["boxes"], self.SCHOOL_PATTERN)
+            length = len(norm)
+            return has_university, conf, length
+
+        best = max(candidates, key=score_line)
+        # 如果最佳行仍然只有“学院”且不含“大学”，视为不可信，直接报错
+        if "大学" not in best["norm"]:
+            raise ValueError("表头院校名称缺失或被学院字段占用")
+        return best
 
     def _pick_code_line(self, lines: list[dict[str, Any]]) -> dict[str, Any]:
         candidates = [line for line in lines if self.CODE_PATTERN.search(line["norm"])]

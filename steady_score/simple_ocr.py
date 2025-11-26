@@ -156,7 +156,7 @@ class SimpleOCRExtractor:
 
         self.logger.info(f"数据区域内有 {len(data_boxes)} 个文本框")
 
-        # 4. 以分数段为锚点，分组成行（传入全部OCR结果，用于最后一行特殊处理）
+        # 4. 以分数段为锚点，分组成行（行带分组，传入全部OCR结果）
         row_groups = self._group_boxes_by_score_anchors(data_boxes, ocr_boxes)
         self.logger.info(f"找到 {len(row_groups)} 个分数段，对应 {len(row_groups)} 行数据")
 
@@ -202,11 +202,11 @@ class SimpleOCRExtractor:
         boxes: list[dict[str, Any]],
         all_boxes: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """以分数段为锚点，将文本框分组成行
+        """以分数段为锚点，将文本框分组成行（行带分组，末行更稳健）
 
         Args:
-            boxes: 数据区域内的所有文本框（用于找分数段）
-            all_boxes: 全部OCR文本框（用于收集同行文本框，特别是最后一行）
+            boxes: 数据区域内的所有文本框（用于找分数段锚点）
+            all_boxes: 全部OCR文本框（用于按行带收集，覆盖末行偏移）
 
         Returns:
             行分组列表，每个元素包含：
@@ -226,58 +226,69 @@ class SimpleOCRExtractor:
 
         # 按y坐标排序，确定行顺序
         score_boxes.sort(key=lambda b: b.get("y", 0.0))
+        score_ys = [sb.get("y", 0.0) for sb in score_boxes]
 
         self.logger.info(f"找到 {len(score_boxes)} 个分数段文本框")
 
-        # 2. 计算动态容忍度（基于相邻分数段的间距）
-        if len(score_boxes) >= 2:
-            y_gaps = [
-                score_boxes[i + 1].get("y", 0.0) - score_boxes[i].get("y", 0.0)
-                for i in range(len(score_boxes) - 1)
-            ]
-            y_gaps = [g for g in y_gaps if g > 0]  # 过滤无效间隙
-
-            if y_gaps:
-                min_gap = min(y_gaps)
-                avg_gap = sum(y_gaps) / len(y_gaps)
-                # 容忍度 = 最小行间距的40%，确保不会跨行
-                tolerance = min(min_gap * 0.4, avg_gap * 0.3)
-                tolerance = max(15.0, min(30.0, tolerance))  # 限制在15-30之间
-                self.logger.info(
-                    f"行间距: min={min_gap:.1f}, avg={avg_gap:.1f}, tolerance={tolerance:.1f}"
-                )
-            else:
-                tolerance = 25.0
+        # 2. 计算行距/行带参数
+        y_gaps = [
+            score_ys[i + 1] - score_ys[i]
+            for i in range(len(score_ys) - 1)
+            if score_ys[i + 1] > score_ys[i]
+        ]
+        if y_gaps:
+            y_gaps_sorted = sorted(y_gaps)
+            median_gap = y_gaps_sorted[len(y_gaps_sorted) // 2]
+            min_gap = min(y_gaps_sorted)
+            avg_gap = sum(y_gaps_sorted) / len(y_gaps_sorted)
         else:
-            tolerance = 25.0  # 只有一行时使用默认值
+            median_gap = 80.0
+            min_gap = 80.0
+            avg_gap = 80.0
 
-        # 3. 识别最后一行（y坐标最大的分数段）
-        if score_boxes:
-            last_score_y = max(sb.get("y", 0.0) for sb in score_boxes)
-        else:
-            last_score_y = None
+        # 行带期望高度（用于首/末行下界估计）
+        base_gap = max(60.0, min(140.0, median_gap))
+        self.logger.info(
+            "行间距: min=%.1f, avg=%.1f, median=%.1f, base_gap=%.1f",
+            min_gap, avg_gap, median_gap, base_gap
+        )
 
-        # 4. 对每个分数段，收集同一行的所有文本框
+        # 数据区顶部估计，用于首行上界
+        data_top_y = min((b.get("y", 0.0) for b in boxes), default=0.0)
+        data_top_y = max(0.0, data_top_y - min(base_gap * 0.4, 30.0))
+
+        # 按钮上缘用于末行下界保护
+        button_top = self._find_button_top(all_boxes)
+        button_guard = button_top - 10.0 if button_top is not None else None
+
+        # 3. 对每个分数段，使用行带收集所有文本框
         row_groups = []
         for idx, score_box in enumerate(score_boxes, start=1):
             score_y = score_box.get("y", 0.0)
-            is_last_row = (score_y == last_score_y)
 
-            # 最后一行特殊处理：从全部OCR结果收集，容忍度放宽
-            if is_last_row:
-                search_boxes = all_boxes  # 从全部OCR结果收集
-                row_tolerance = min(50.0, tolerance * 1.5)  # 放宽容忍度到50像素或1.5倍
-                self.logger.debug(
-                    f"行 {idx} [最后一行]: 使用全部OCR结果，容忍度={row_tolerance:.1f}"
-                )
+            prev_y = score_ys[idx - 2] if idx >= 2 else None
+            next_y = score_ys[idx] if idx < len(score_ys) else None
+
+            # 行带上下界（用前后锚点中点，首/末行用估计行高）
+            if prev_y is None:
+                top_boundary = data_top_y
             else:
-                search_boxes = boxes  # 从数据区域收集
-                row_tolerance = tolerance
+                top_boundary = (prev_y + score_y) / 2
 
-            # 收集y坐标接近的文本框
+            if next_y is None:
+                bottom_boundary = score_y + base_gap * 0.8
+            else:
+                bottom_boundary = (score_y + next_y) / 2
+
+            if button_guard is not None:
+                bottom_boundary = min(bottom_boundary, button_guard)
+
+            if bottom_boundary <= top_boundary:
+                bottom_boundary = top_boundary + max(20.0, base_gap * 0.5)
+
             row_boxes = [
-                b for b in search_boxes
-                if abs(b.get("y", 0.0) - score_y) <= row_tolerance
+                b for b in all_boxes
+                if top_boundary <= b.get("y", 0.0) <= bottom_boundary
             ]
 
             row_groups.append({
@@ -285,10 +296,13 @@ class SimpleOCRExtractor:
                 "anchor": score_box,
                 "boxes": row_boxes,
                 "y": score_y,
+                "top": top_boundary,
+                "bottom": bottom_boundary,
             })
 
             self.logger.debug(
-                f"行 {idx}: 分数段y={score_y:.1f}, 收集到 {len(row_boxes)} 个文本框"
+                "行 %d: y=%.1f, 带=[%.1f, %.1f], 收集到 %d 个文本框",
+                idx, score_y, top_boundary, bottom_boundary, len(row_boxes)
             )
 
         return row_groups
@@ -316,6 +330,16 @@ class SimpleOCRExtractor:
             idx = group["row_index"]
             row_boxes = group["boxes"]
             anchor = group["anchor"]
+            row_is_last = (idx == len(row_groups))
+
+            # 末行：仅保留列通道内的文本，屏蔽底部按钮类文本
+            if row_is_last:
+                col_windows = self._column_windows(header, img_array.shape[1])
+                row_boxes = [
+                    b for b in row_boxes
+                    if self._box_in_columns(b, col_windows, pad=15.0)
+                    and not self._looks_like_button_text(b.get("text", ""))
+                ]
 
             if not row_boxes:
                 failed.append((idx, "该行没有文本框"))
@@ -352,6 +376,19 @@ class SimpleOCRExtractor:
             parsed_score = self._parse_score_from_texts(score_texts)
             candidates_val = self._extract_number_from_texts(cand_texts)
             admitted_val = self._extract_number_from_texts(admit_texts)
+
+            # 末行缺列时，尝试窄裁剪重跑OCR兜底（不放松校验）
+            if row_is_last and (parsed_score is None or candidates_val is None or admitted_val is None):
+                recovered = self._recover_last_row_via_crop(
+                    img_array=img_array,
+                    row_group=group,
+                    header=header,
+                )
+                if recovered:
+                    score_texts, cand_texts, admit_texts = recovered
+                    parsed_score = self._parse_score_from_texts(score_texts)
+                    candidates_val = self._extract_number_from_texts(cand_texts)
+                    admitted_val = self._extract_number_from_texts(admit_texts)
 
             # 严格验证
             if parsed_score is None:
@@ -404,6 +441,70 @@ class SimpleOCRExtractor:
 
         return score_rows, failed
 
+    def _recover_last_row_via_crop(
+        self,
+        img_array: np.ndarray,
+        row_group: dict[str, Any],
+        header: TableHeader | None,
+    ) -> tuple[list[str], list[str], list[str]] | None:
+        """末行窄裁剪单独OCR，尝试补全缺失列（不放松数值校验）。"""
+        top = float(row_group.get("top", row_group.get("y", 0.0) - 30.0))
+        bottom = float(row_group.get("bottom", row_group.get("y", 0.0) + 80.0))
+        h = img_array.shape[0]
+        if h <= 0:
+            return None
+
+        margin = 8.0
+        top = max(0.0, top - margin)
+        bottom = min(float(h), bottom + margin)
+        if bottom - top < 20.0:
+            return None
+
+        try:
+            crop = img_array[int(top): int(bottom), :, :]
+            boxes = self._ocr_boxes(crop)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("末行裁剪OCR失败: %s", exc)
+            return None
+
+        # y坐标补偿回全图坐标
+        for b in boxes:
+            b["y"] = b.get("y", 0.0) + top
+            if "y_min" in b:
+                b["y_min"] = b.get("y_min", 0.0) + top
+            if "y_max" in b:
+                b["y_max"] = b.get("y_max", 0.0) + top
+
+        col_windows = self._column_windows(header, img_array.shape[1])
+        boxes = [
+            b for b in boxes
+            if self._box_in_columns(b, col_windows, pad=15.0)
+            and not self._looks_like_button_text(b.get("text", ""))
+        ]
+        if not boxes:
+            return None
+
+        columns = self._split_row_into_columns_by_gap(boxes, gap_threshold=60.0)
+        if columns is None:
+            if header:
+                score_texts, cand_texts, admit_texts = self._collect_by_header_boundary(boxes, header)
+            else:
+                score_texts, cand_texts, admit_texts = self._collect_by_thirds(boxes, img_array.shape[1])
+        else:
+            col1_boxes, col2_boxes, col3_boxes = columns
+            score_texts = [b.get("text", "").strip() for b in col1_boxes if b.get("text")]
+            cand_texts = [b.get("text", "").strip() for b in col2_boxes if b.get("text")]
+            admit_texts = [b.get("text", "").strip() for b in col3_boxes if b.get("text")]
+
+        if not (score_texts or cand_texts or admit_texts):
+            return None
+
+        self.logger.debug(
+            "末行窄裁剪OCR补充: score=%s, cand=%s, admit=%s",
+            score_texts, cand_texts, admit_texts,
+        )
+        return score_texts, cand_texts, admit_texts
+
     def _collect_by_header_boundary(
         self,
         row_boxes: list[dict[str, Any]],
@@ -445,6 +546,30 @@ class SimpleOCRExtractor:
         admit_texts = collect_texts(third * 2, image_width)
 
         return score_texts, cand_texts, admit_texts
+
+    def _column_windows(self, header: TableHeader | None, image_width: int) -> list[tuple[float, float]]:
+        """获取三列的x窗口（用于末行过滤/回退）。"""
+        if header:
+            return [
+                header.col1_x_range,
+                header.col2_x_range,
+                header.col3_x_range,
+            ]
+        third = image_width / 3
+        return [
+            (0.0, third),
+            (third, third * 2),
+            (third * 2, float(image_width)),
+        ]
+
+    def _box_in_columns(self, box: dict[str, Any], windows: list[tuple[float, float]], pad: float = 0.0) -> bool:
+        x = box.get("x", 0.0)
+        return any(x_range[0] - pad <= x <= x_range[1] + pad for x_range in windows)
+
+    def _looks_like_button_text(self, text: str) -> bool:
+        text = text or ""
+        noisy_tokens = ("一对一", "择校", "点我", "PK", "话题", "咨询")
+        return any(token in text for token in noisy_tokens)
 
     def _is_score_increasing(self, rows: list[ScoreRow]) -> bool:
         for i in range(len(rows) - 1):
@@ -911,7 +1036,7 @@ class SimpleOCRExtractor:
 
     def _find_button_top(self, boxes: list[dict[str, Any]]) -> float | None:
         """查找“一对一择校”按钮的上边界。"""
-        button_texts = ("一对一择校", "一对一", "择校")
+        button_texts = ("一对一择校", "一对一", "择校", "点我", "咨询")
         candidates: list[float] = []
         for b in boxes:
             text = b.get("text", "")

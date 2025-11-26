@@ -325,19 +325,22 @@ class SimpleOCRExtractor:
         """
         score_rows: list[ScoreRow] = []
         failed: list[tuple[int, str]] = []
+        image_width = img_array.shape[1]
+        col_windows = self._column_windows(header, image_width)
 
         for group in row_groups:
             idx = group["row_index"]
             row_boxes = group["boxes"]
             anchor = group["anchor"]
             row_is_last = (idx == len(row_groups))
+            row_top = float(group.get("top", group.get("y", 0.0) - 40.0))
+            row_bottom = float(group.get("bottom", group.get("y", 0.0) + 40.0))
 
             # 末行：仅保留列通道内的文本，屏蔽底部按钮类文本
             if row_is_last:
-                col_windows = self._column_windows(header, img_array.shape[1])
                 row_boxes = [
                     b for b in row_boxes
-                    if self._box_in_columns(b, col_windows, pad=15.0)
+                    if self._box_in_columns(b, col_windows, pad=25.0)
                     and not self._looks_like_button_text(b.get("text", ""))
                 ]
 
@@ -364,9 +367,9 @@ class SimpleOCRExtractor:
             else:
                 # 间隙检测成功
                 col1_boxes, col2_boxes, col3_boxes = columns
-                score_texts = [b.get("text", "").strip() for b in col1_boxes if b.get("text")]
-                cand_texts = [b.get("text", "").strip() for b in col2_boxes if b.get("text")]
-                admit_texts = [b.get("text", "").strip() for b in col3_boxes if b.get("text")]
+                score_texts = self._collect_texts_from_boxes(col1_boxes, merge_numeric=row_is_last)
+                cand_texts = self._collect_texts_from_boxes(col2_boxes, merge_numeric=row_is_last)
+                admit_texts = self._collect_texts_from_boxes(col3_boxes, merge_numeric=row_is_last)
 
                 self.logger.debug(
                     f"行 {idx}: 间隙检测成功，3列文本数 [{len(score_texts)}, {len(cand_texts)}, {len(admit_texts)}]"
@@ -374,8 +377,11 @@ class SimpleOCRExtractor:
 
             # 解析数据
             parsed_score = self._parse_score_from_texts(score_texts)
-            candidates_val = self._extract_number_from_texts(cand_texts)
-            admitted_val = self._extract_number_from_texts(admit_texts)
+            # 严格数字共识：多重OCR + 高置信度，不一致则失败
+            cand_cell = self._crop_cell_from_group(img_array, row_top, row_bottom, col_windows[1])
+            admit_cell = self._crop_cell_from_group(img_array, row_top, row_bottom, col_windows[2])
+            candidates_val = self._extract_number_strict(cand_texts, cand_cell)
+            admitted_val = self._extract_number_strict(admit_texts, admit_cell)
 
             # 末行缺列时，尝试窄裁剪重跑OCR兜底（不放松校验）
             if row_is_last and (parsed_score is None or candidates_val is None or admitted_val is None):
@@ -387,8 +393,8 @@ class SimpleOCRExtractor:
                 if recovered:
                     score_texts, cand_texts, admit_texts = recovered
                     parsed_score = self._parse_score_from_texts(score_texts)
-                    candidates_val = self._extract_number_from_texts(cand_texts)
-                    admitted_val = self._extract_number_from_texts(admit_texts)
+                    candidates_val = self._extract_number_strict(cand_texts, cand_cell)
+                    admitted_val = self._extract_number_strict(admit_texts, admit_cell)
 
             # 严格验证
             if parsed_score is None:
@@ -737,6 +743,25 @@ class SimpleOCRExtractor:
             result.append(sorted_boxes)
 
         return result
+
+    def _collect_texts_from_boxes(
+        self,
+        boxes: list[dict[str, Any]],
+        merge_numeric: bool = False,
+    ) -> list[str]:
+        """按x排序收集文本，可选合并数字碎片。"""
+        texts = [
+            b.get("text", "").strip()
+            for b in sorted(boxes, key=lambda b: b.get("x", 0.0))
+            if b.get("text")
+        ]
+        texts = [t for t in texts if t]
+        if not merge_numeric or len(texts) <= 1:
+            return texts
+
+        if all(re.fullmatch(r"\d{1,3}", t) for t in texts):
+            return ["".join(texts)]
+        return texts
 
     def _ocr_boxes(self, img_array: np.ndarray) -> list[dict[str, Any]]:
         """运行 OCR 并统一为 box 结构。"""
@@ -1299,6 +1324,24 @@ class SimpleOCRExtractor:
             return np.zeros((0, 0, 3), dtype=np.uint8)
         return img_array[y0:y1, x0:x1]
 
+    def _crop_cell_from_group(
+        self,
+        img_array: np.ndarray,
+        row_top: float,
+        row_bottom: float,
+        x_range: tuple[float, float],
+        pad: int = 6,
+    ) -> np.ndarray:
+        """按行带与列窗口裁剪单元格，用于数字重识别。"""
+        height, width = img_array.shape[:2]
+        x0 = max(0, int(x_range[0]) - pad)
+        x1 = min(width, int(x_range[1]) + pad)
+        y0 = max(0, int(row_top) - pad)
+        y1 = min(height, int(row_bottom) + pad)
+        if x1 <= x0 or y1 <= y0:
+            return np.zeros((0, 0, 3), dtype=np.uint8)
+        return img_array[y0:y1, x0:x1]
+
     def _ocr_cell_text(self, cell_image: np.ndarray) -> list[str]:
         """对单元格局部进行OCR，提升小号数字召回。"""
         if cell_image.size == 0:
@@ -1331,6 +1374,125 @@ class SimpleOCRExtractor:
             texts.extend([b["text"] for b in parsed if b.get("text")])
         return texts
 
+    def _ocr_crop_boxes(self, image_array: np.ndarray) -> list[dict[str, Any]]:
+        """对裁剪图运行OCR并返回box结构，不写日志。"""
+        try:
+            result = self.ocr.ocr(image_array)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("裁剪OCR失败: %s", exc)
+            return []
+        if not result or not result[0]:
+            return []
+        first = result[0]
+        if isinstance(first, dict):
+            texts = first.get("rec_texts", [])
+            polys = first.get("rec_polys", [])
+            scores = first.get("rec_scores", [])
+            boxes: list[dict[str, Any]] = []
+            for i, (text, poly) in enumerate(zip(texts, polys)):
+                try:
+                    x_vals = poly[:, 0]
+                    y_vals = poly[:, 1]
+                    x_center = float(np.mean(x_vals))
+                    y_center = float(np.mean(y_vals))
+                    conf = scores[i] if i < len(scores) else 1.0
+                    boxes.append({
+                        "text": text.strip(),
+                        "x": x_center,
+                        "y": y_center,
+                        "x_min": float(np.min(x_vals)),
+                        "x_max": float(np.max(x_vals)),
+                        "y_min": float(np.min(y_vals)),
+                        "y_max": float(np.max(y_vals)),
+                        "conf": conf,
+                    })
+                except Exception:  # noqa: BLE001
+                    continue
+            return boxes
+        return self._parse_ocr_result(first)
+
+    def _ocr_number_variants(self, cell_image: np.ndarray) -> list[tuple[int, float]]:
+        """对数字单元格多尺度/二值化OCR，输出(数值,置信度)。"""
+        if cell_image.size == 0:
+            return []
+        h, w = cell_image.shape[:2]
+        variants: list[np.ndarray] = []
+        variants.append(cell_image)
+        scale = 1.8 if max(h, w) < 160 else 1.3
+        try:
+            pil_img = Image.fromarray(cell_image)
+            variants.append(np.array(pil_img.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                resample=Image.BICUBIC,
+            )))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            gray = Image.fromarray(cell_image).convert("L")
+            bin_img = gray.point(lambda p: 0 if p < 180 else 255).convert("RGB")
+            variants.append(np.array(bin_img))
+        except Exception:  # noqa: BLE001
+            pass
+
+        candidates: list[tuple[int, float]] = []
+        for var in variants:
+            boxes = self._ocr_crop_boxes(var)
+            for b in boxes:
+                text = b.get("text", "").strip()
+                if self.NUMBER_PATTERN.match(text):
+                    try:
+                        num = int(text)
+                        conf = float(b.get("conf", 0.0))
+                        candidates.append((num, conf))
+                    except ValueError:
+                        continue
+        return candidates
+
+    def _extract_number_strict(self, texts: list[str], cell_image: np.ndarray | None) -> int | None:
+        """高门槛数字提取：多路一致且置信度达标，否则返回None。"""
+        candidates: list[tuple[int, float]] = []
+        for t in texts:
+            t = t.strip()
+            if not t:
+                continue
+            if self.NUMBER_PATTERN.match(t):
+                try:
+                    candidates.append((int(t), 0.5))  # 没有置信度时给中等权重
+                except ValueError:
+                    continue
+            else:
+                digits = re.findall(r"\d+", t)
+                if digits:
+                    try:
+                        candidates.append((int(digits[0]), 0.4))
+                    except ValueError:
+                        continue
+
+        if cell_image is not None:
+            candidates.extend(self._ocr_number_variants(cell_image))
+
+        if not candidates:
+            return None
+
+        # 汇总置信度
+        agg: dict[int, float] = {}
+        for num, conf in candidates:
+            agg[num] = agg.get(num, 0.0) + float(conf)
+
+        # 选置信度最高的数字，要求明显领先且达阈值
+        sorted_nums = sorted(agg.items(), key=lambda x: x[1], reverse=True)
+        top_num, top_conf = sorted_nums[0]
+        second_conf = sorted_nums[1][1] if len(sorted_nums) > 1 else 0.0
+
+        # 单字符要求更高置信度
+        conf_threshold = 0.8 if top_num < 10 else 0.6
+        if top_conf < conf_threshold:
+            return None
+        if second_conf and top_conf < second_conf * 1.5:
+            return None
+
+        return top_num
+
     def _parse_score_from_texts(self, texts: list[str]) -> tuple[str, int, int] | None:
         combined = " ".join(t for t in texts if t)
         match = self.SCORE_PATTERN.search(combined)
@@ -1346,7 +1508,7 @@ class SimpleOCRExtractor:
             return f"{lower}-{upper}", lower, upper
         return None
 
-    def _extract_number_from_texts(self, texts: list[str]) -> int | None:
+    def _extract_number_from_texts(self, texts: list[str], min_conf: float | None = None) -> int | None:
         for text in texts:
             text = text.strip()
             if not text:
